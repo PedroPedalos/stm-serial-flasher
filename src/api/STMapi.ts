@@ -42,6 +42,8 @@ function u8a(array) {
 }
 
 export class InfoGV {
+    [key: string]: any;
+
     constructor() {
         // Bootloader version
         this.blVersion = null;
@@ -53,6 +55,8 @@ export class InfoGV {
 }
 
 export class InfoGET {
+    [key: string]: any;
+
     constructor() {
         // Bootloader version
         this.blVersion = null;
@@ -66,6 +70,8 @@ export class InfoGET {
 }
 
 export class STMApi {
+    [key: string]: any;
+
     constructor(serial) {
         if (!serial) {
             throw new Error('Serial port object not provided');

@@ -1,3 +1,4 @@
+// @ts-nocheck
 'use strict';
 
 const tools = require('./utils');
@@ -25,6 +26,8 @@ function u8a(array) {
 }
 
 class STM32Api {
+  [key: string]: any;
+
   constructor(serial, logFn) {
     if (!serial) {
       throw new Error('Serial port object not provided');

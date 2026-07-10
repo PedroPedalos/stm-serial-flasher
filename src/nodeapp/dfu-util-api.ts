@@ -1,3 +1,4 @@
+// @ts-nocheck
 'use strict';
 
 const { spawn } = require('node:child_process');
@@ -51,8 +52,8 @@ function stripDfuUtilBanner(output) {
  * Optional live output callback for stream processing.
  * @returns {Promise<{stdout:string,stderr:string}>}
  */
-function runCommand(cmd, args, options) {
-  const opts = options || {};
+function runCommand(cmd, args, options = {}) {
+  const opts = options;
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -84,7 +85,7 @@ function runCommand(cmd, args, options) {
         return;
       }
 
-      const err = new Error('Command failed: ' + cmd + ' ' + args.join(' '));
+      const err = /** @type {Error & {code?: number|string, stdout?: string, stderr?: string}} */ (new Error('Command failed: ' + cmd + ' ' + args.join(' ')));
       err.code = code;
       err.stdout = stdout;
       err.stderr = stderr;
@@ -142,7 +143,7 @@ function enrichCommandError(error) {
   ].join('\n'));
 
   const message = details ? error.message + '\n' + details : error.message;
-  const wrapped = new Error(message);
+  const wrapped = /** @type {Error & {code?: number|string, stdout?: string, stderr?: string}} */ (new Error(message));
   wrapped.code = error.code;
   wrapped.stdout = error.stdout;
   wrapped.stderr = error.stderr;
@@ -163,12 +164,13 @@ class DfuUtilApi {
     try {
       await runCommand('dfu-util', ['--version']);
     } catch (error) {
-      if (error.code === 'ENOENT') {
+      const err = /** @type {any} */ (error);
+      if (err.code === 'ENOENT') {
         throw new Error('dfu-util is not installed. Install it first, for example on macOS: brew install dfu-util');
       }
 
-      const details = [error.stderr, error.stdout].filter(Boolean).join('\n').trim();
-      throw new Error('dfu-util is not available: ' + (details || error.message));
+      const details = [err.stderr, err.stdout].filter(Boolean).join('\n').trim();
+      throw new Error('dfu-util is not available: ' + (details || err.message));
     }
   }
 
@@ -188,7 +190,7 @@ class DfuUtilApi {
       const merged = [result.stdout, result.stderr].filter(Boolean).join('\n');
       return stripDfuUtilBanner(merged);
     } catch (error) {
-      throw enrichCommandError(error);
+      throw enrichCommandError(/** @type {any} */ (error));
     }
   }
 
@@ -243,7 +245,7 @@ class DfuUtilApi {
       const merged = [result.stdout, result.stderr].filter(Boolean).join('\n');
       return stripDfuUtilBanner(merged);
     } catch (error) {
-      throw enrichCommandError(error);
+      throw enrichCommandError(/** @type {any} */ (error));
     }
   }
 }

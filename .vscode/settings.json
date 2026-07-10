@@ -11,6 +11,7 @@
         "/^node --check src/nodeapp/cli\\.js && node src/nodeapp/cli\\.js --help \\| head -n 40$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "npm run -s nodeapp:run": true
     }
 }

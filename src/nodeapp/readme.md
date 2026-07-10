@@ -14,10 +14,10 @@ then performs the DFU flash flow.
 
 ## Location
 
-- CLI entrypoint: src/nodeapp/cli.js
-- Serial adapter: src/nodeapp/serialport-adapter.js
-- STM32 protocol API: src/nodeapp/stm32-api.js
-- File parsing utilities: src/nodeapp/utils.js
+- CLI entrypoint: src/nodeapp/cli.ts
+- Serial adapter: src/nodeapp/serialport-adapter.ts
+- STM32 protocol API: src/nodeapp/stm32-api.ts
+- File parsing utilities: src/nodeapp/utils.ts
 
 ## Requirements
 
@@ -91,16 +91,16 @@ From repository root:
 
 Command:
 
-    node src/nodeapp/cli.js --help
+  npm run nodeapp:run -- --help
 
 Output:
 
     STM32 Node Flasher (UART + USB DFU)
 
     Usage:
-      node src/nodeapp/cli.js --file <firmware|bootloader> [options]
-      node src/nodeapp/cli.js --list-ports
-      node src/nodeapp/cli.js --list-dfu
+      node build/nodeapp/cli.js --file <firmware|bootloader> [options]
+      node build/nodeapp/cli.js --list-ports
+      node build/nodeapp/cli.js --list-dfu
 
     Options:
       -f, --file <path>           Firmware/bootloader file (.bin, .hex, .ihx, .s19)

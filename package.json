@@ -2,17 +2,20 @@
   "name": "stm-serial-flasher",
   "version": "2.0.0",
   "description": "Programmer for STM microcontrollers with the embedded bootloader using Cromium's serial port API",
-  "main": "index.js",
+  "main": "build/nodeapp/cli.js",
   "scripts": {
-    "nodeapp:list-ports": "node src/nodeapp/cli.js --list-ports",
-    "nodeapp:list-dfu": "node src/nodeapp/cli.js --list-dfu",
-    "nodeapp:run": "node src/nodeapp/cli.js",
-    "nodeapp:run-dfu": "node src/nodeapp/cli.js --transport dfu --file ./BootloaderChg_G0_V_1_0_7_210426.hex",
-    "nodeapp:run-romboot-dfu": "node src/nodeapp/cli.js --transport dfu-romboot --file ./BootloaderChg_G0_V_1_0_7_210426.hex",
-    "nodeapp:run-romboot-dfu-fixed": "node src/nodeapp/cli.js --transport dfu-romboot --file ./BootloaderChg_G0_V_1_0_7_210426.hex --romboot-port /dev/tty.usbmodem205C337C46421 --go",
-    "nodeapp:run-romboot-dfu-fixed-2": "node src/nodeapp/cli.js --transport dfu-romboot --file ./BootloaderChg_G0-1.0.3.hex --romboot-port /dev/tty.usbmodem205C337C46421 --go",
-    "nodeapp:run-port": "node src/nodeapp/cli.js --file ./BootloaderChg_G0_V_1_0_7_210426.hex --port /dev/tty.usbmodem205C337C46421",
-    "nodeapp:debug": "node --inspect-brk src/nodeapp/cli.js --file ./BootloaderChg_G0_V_1_0_7_210426.hex --port /dev/tty.usbmodem205C337C46421"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf build",
+    "nodeapp:list-ports": "npm run -s build && node build/nodeapp/cli.js --list-ports",
+    "nodeapp:list-dfu": "npm run -s build && node build/nodeapp/cli.js --list-dfu",
+    "nodeapp:run": "npm run -s build && node build/nodeapp/cli.js",
+    "nodeapp:run-dfu": "npm run -s build && node build/nodeapp/cli.js --transport dfu --file ./BootloaderChg_G0_V_1_0_7_210426.hex",
+    "nodeapp:run-romboot-dfu": "npm run -s build && node build/nodeapp/cli.js --transport dfu-romboot --file ./BootloaderChg_G0_V_1_0_7_210426.hex",
+    "nodeapp:run-romboot-dfu-fixed": "npm run -s build && node build/nodeapp/cli.js --transport dfu-romboot --file ./BootloaderChg_G0_V_1_0_7_210426.hex --romboot-port /dev/tty.usbmodem205C337C46421 --go",
+    "nodeapp:run-romboot-dfu-fixed-2": "npm run -s build && node build/nodeapp/cli.js --transport dfu-romboot --file ./BootloaderChg_G0-1.0.3.hex --romboot-port /dev/tty.usbmodem205C337C46421 --go",
+    "nodeapp:run-port": "npm run -s build && node build/nodeapp/cli.js --file ./BootloaderChg_G0_V_1_0_7_210426.hex --port /dev/tty.usbmodem205C337C46421",
+    "nodeapp:debug": "npm run -s build && node --inspect-brk build/nodeapp/cli.js --file ./BootloaderChg_G0_V_1_0_7_210426.hex --port /dev/tty.usbmodem205C337C46421"
   },
   "repository": {
     "type": "git",
@@ -25,6 +28,8 @@
   },
   "homepage": "https://github.com/Gamadril/stm-serial-flasher#readme",
   "devDependencies": {
+    "@types/node": "^24.0.10",
+    "typescript": "^5.8.3"
   },
   "dependencies": {
     "serialport": "^13.0.0"

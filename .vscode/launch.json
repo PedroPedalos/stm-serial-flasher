@@ -6,7 +6,7 @@
       "request": "launch",
       "name": "Nodeapp: Debug (npm script args)",
       "cwd": "${workspaceFolder}",
-      "program": "${workspaceFolder}/src/nodeapp/cli.js",
+      "program": "${workspaceFolder}/build/nodeapp/cli.js",
       "runtimeArgs": [
         "--inspect-brk"
       ],
@@ -26,7 +26,7 @@
       "request": "launch",
       "name": "Nodeapp: Flash (Prompt Args)",
       "cwd": "${workspaceFolder}",
-      "program": "${workspaceFolder}/src/nodeapp/cli.js",
+      "program": "${workspaceFolder}/build/nodeapp/cli.js",
       "console": "integratedTerminal",
       "skipFiles": [
         "<node_internals>/**"
@@ -45,7 +45,7 @@
       "request": "launch",
       "name": "Nodeapp: Flash + GO (Prompt Args)",
       "cwd": "${workspaceFolder}",
-      "program": "${workspaceFolder}/src/nodeapp/cli.js",
+      "program": "${workspaceFolder}/build/nodeapp/cli.js",
       "console": "integratedTerminal",
       "skipFiles": [
         "<node_internals>/**"

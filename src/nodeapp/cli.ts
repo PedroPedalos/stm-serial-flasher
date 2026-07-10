@@ -13,9 +13,9 @@ function printUsage() {
   console.log('STM32 Node Flasher (UART + USB DFU)');
   console.log('');
   console.log('Usage:');
-  console.log('  node src/nodeapp/cli.js --file <firmware|bootloader> [options]');
-  console.log('  node src/nodeapp/cli.js --list-ports');
-  console.log('  node src/nodeapp/cli.js --list-dfu');
+  console.log('  node build/nodeapp/cli.js --file <firmware|bootloader> [options]');
+  console.log('  node build/nodeapp/cli.js --list-ports');
+  console.log('  node build/nodeapp/cli.js --list-dfu');
   console.log('');
   console.log('Options:');
   console.log('  -f, --file <path>           Firmware/bootloader file (.bin, .hex, .ihx, .s19)');
@@ -54,6 +54,7 @@ function parseAddress(value) {
 
 function parseArgs(argv) {
   const opts = {
+    help: false,
     transport: 'uart',
     baudrate: '9600',
     startAddress: '0x08000000',
