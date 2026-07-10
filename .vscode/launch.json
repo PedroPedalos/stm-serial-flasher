@@ -1,0 +1,94 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Nodeapp: Debug (npm script args)",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/src/nodeapp/cli.js",
+      "runtimeArgs": [
+        "--inspect-brk"
+      ],
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "args": [
+        "--file",
+        "./BootloaderChg_G0_V_1_0_7_210426.hex",
+        "--port",
+        "/dev/tty.usbmodem205C337C46421"
+      ]
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Nodeapp: Flash (Prompt Args)",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/src/nodeapp/cli.js",
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "args": [
+        "--file",
+        "${input:nodeappFirmwareFile}",
+        "--port",
+        "${input:nodeappSerialPort}",
+        "--start-address",
+        "${input:nodeappStartAddress}"
+      ]
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Nodeapp: Flash + GO (Prompt Args)",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/src/nodeapp/cli.js",
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "args": [
+        "--file",
+        "${input:nodeappFirmwareFile}",
+        "--port",
+        "${input:nodeappSerialPort}",
+        "--start-address",
+        "${input:nodeappStartAddress}",
+        "--go"
+      ]
+    },
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Nodeapp: Attach (9229)",
+      "port": 9229,
+      "restart": false,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "nodeappFirmwareFile",
+      "type": "promptString",
+      "description": "Firmware/bootloader file path",
+      "default": "./firmware.hex"
+    },
+    {
+      "id": "nodeappSerialPort",
+      "type": "promptString",
+      "description": "Serial port path",
+      "default": "/dev/tty.usbmodem0000000000001"
+    },
+    {
+      "id": "nodeappStartAddress",
+      "type": "promptString",
+      "description": "Start address for BIN files",
+      "default": "0x08000000"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^node --check src/nodeapp/cli\\.js && node --check src/nodeapp/stm32-api\\.js && node --check src/nodeapp/serialport-adapter\\.js && node --check src/nodeapp/utils\\.js$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^node --check src/nodeapp/dfu-util-api\\.js && node --check src/nodeapp/cli\\.js$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^node --check src/nodeapp/cli\\.js && node src/nodeapp/cli\\.js --help \\| head -n 40$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
