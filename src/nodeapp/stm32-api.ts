@@ -1,7 +1,4 @@
-// @ts-nocheck
-'use strict';
-
-const tools = require('./utils');
+import * as tools from './utils';
 
 const MAX_WRITE_BLOCK_SIZE_STM32 = 256;
 const MAX_READ_BLOCK_SIZE = 256;
@@ -21,14 +18,23 @@ const CMD_WRITE = 0x31;
 const CMD_ERASE = 0x43;
 const CMD_EXTENDED_ERASE = 0x44;
 
-function u8a(array) {
+function u8a(array: number[] | Uint8Array): Uint8Array {
   return new Uint8Array(array);
 }
 
-class STM32Api {
+type SerialLike = {
+  isOpen: () => boolean;
+  open: (parameter: { baudRate: number; parity?: 'none' | 'even' | 'odd' | 'mark' | 'space' }) => Promise<void>;
+  close: () => Promise<void>;
+  read: (timeoutMs?: number) => Promise<Uint8Array>;
+  write: (data: Buffer | Uint8Array | number[] | string) => Promise<void>;
+  control: (lineParams: { dataTerminalReady?: boolean; requestToSend?: boolean }) => Promise<void>;
+};
+
+export default class STM32Api {
   [key: string]: any;
 
-  constructor(serial, logFn) {
+  constructor(serial: SerialLike, logFn?: (message: string) => void) {
     if (!serial) {
       throw new Error('Serial port object not provided');
     }
@@ -41,7 +47,7 @@ class STM32Api {
     this.commands = [];
   }
 
-  async connect(params) {
+  async connect(params: { baudrate: string; replyMode?: boolean }): Promise<void> {
     this.log('Connecting with baudrate ' + params.baudrate + ' and reply mode ' + (params.replyMode ? 'on' : 'off'));
 
     if (this.serial.isOpen()) {
@@ -62,7 +68,7 @@ class STM32Api {
     await this.activateBootloader();
   }
 
-  async disconnect() {
+  async disconnect(): Promise<void> {
     const signal = {};
     signal[BOOT0_PIN] = PIN_LOW;
 
@@ -73,7 +79,7 @@ class STM32Api {
     }
   }
 
-  async write(data, address, onProgress) {
+  async write(data: Uint8Array, address: number, onProgress?: (writtenBlocks: number, totalBlocks: number) => void): Promise<void> {
     this.log('Writing ' + data.length + ' bytes to flash at address 0x' + address.toString(16) + ' using ' + this.writeBlockSize + ' bytes chunks');
 
     if (!this.serial.isOpen()) {
@@ -100,7 +106,7 @@ class STM32Api {
     this.log('Finished writing block sequence');
   }
 
-  async eraseAll() {
+  async eraseAll(): Promise<void> {
     if (!this.serial.isOpen()) {
       throw new Error('Connection must be established before sending commands');
     }
@@ -135,7 +141,7 @@ class STM32Api {
     }
   }
 
-  async cmdGET() {
+  async cmdGET(): Promise<{ blVersion: string; commands: number[] }> {
     if (!this.serial.isOpen()) {
       throw new Error('Connection must be established before sending commands');
     }
@@ -161,7 +167,7 @@ class STM32Api {
     return info;
   }
 
-  async cmdGID() {
+  async cmdGID(): Promise<string> {
     if (!this.commands.length) {
       throw new Error('Execute GET command first');
     }
@@ -184,7 +190,7 @@ class STM32Api {
     return '0x' + tools.b2hexstr(response[2]) + tools.b2hexstr(response[3]);
   }
 
-  async cmdGO(address) {
+  async cmdGO(address: number): Promise<void> {
     if (!Number.isInteger(address)) {
       throw new Error('Invalid address parameter');
     }
@@ -209,7 +215,7 @@ class STM32Api {
     }
   }
 
-  async cmdWRITE(data, address) {
+  async cmdWRITE(data: Uint8Array, address: number): Promise<void> {
     if (!(data instanceof Uint8Array)) {
       throw new Error('Missing data to write');
     }
@@ -258,7 +264,7 @@ class STM32Api {
     }
   }
 
-  async readResponse() {
+  async readResponse(): Promise<Uint8Array> {
     const result = await this.serial.read();
 
     if (this.replyMode) {
@@ -268,7 +274,7 @@ class STM32Api {
     return result;
   }
 
-  async activateBootloader() {
+  async activateBootloader(): Promise<void> {
     this.log('Activating bootloader...');
 
     if (!this.serial.isOpen()) {
@@ -298,7 +304,7 @@ class STM32Api {
     this.log('Bootloader is ready for commands');
   }
 
-  async resetTarget() {
+  async resetTarget(): Promise<void> {
     this.log('Resetting target...');
 
     if (!this.serial.isOpen()) {
@@ -316,7 +322,7 @@ class STM32Api {
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
-  calcChecksum(data, withLength) {
+  calcChecksum(data: Uint8Array | number[], withLength: boolean): number {
     let result = 0;
     for (let i = 0; i < data.length; i += 1) {
       result ^= data[i];
@@ -329,5 +335,3 @@ class STM32Api {
     return result;
   }
 }
-
-module.exports = STM32Api;

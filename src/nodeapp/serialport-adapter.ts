@@ -1,7 +1,20 @@
-// @ts-nocheck
-'use strict';
+import { SerialPort } from 'serialport';
 
-const { SerialPort } = require('serialport');
+type SerialReadResolver = {
+  resolve: (value: Uint8Array) => void;
+  reject: (error: Error) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+};
+
+type SerialOpenParams = {
+  baudRate: number;
+  parity?: 'none' | 'even' | 'odd' | 'mark' | 'space';
+};
+
+type SerialControlParams = {
+  dataTerminalReady?: boolean;
+  requestToSend?: boolean;
+};
 
 /**
  * Minimal serial adapter used by the Node flasher flows.
@@ -12,18 +25,18 @@ const { SerialPort } = require('serialport');
  * - buffered writes with drain wait
  * - DTR/RTS line control compatible with WebSerial-style flags
  */
-class SerialPortAdapter {
-  pathName;
-  port;
-  rxQueue;
-  pendingReads;
-  closed;
-  defaultReadTimeoutMs;
+export default class SerialPortAdapter {
+  pathName: string;
+  port: SerialPort | null;
+  rxQueue: Uint8Array[];
+  pendingReads: SerialReadResolver[];
+  closed: boolean;
+  defaultReadTimeoutMs: number;
 
   /**
    * @param {string} pathName Absolute serial device path.
    */
-  constructor(pathName) {
+  constructor(pathName: string) {
     if (!pathName) {
       throw new Error('Serial port path is required');
     }
@@ -58,7 +71,7 @@ class SerialPortAdapter {
    * Open the serial connection.
    * @param {{baudRate: number, parity?: 'none'|'even'|'odd'|'mark'|'space'}} parameter
    */
-  async open(parameter) {
+  async open(parameter: SerialOpenParams): Promise<void> {
     if (this.isOpen()) {
       throw new Error('Port already open');
     }
@@ -73,7 +86,7 @@ class SerialPortAdapter {
     });
 
     await new Promise<void>((resolve, reject) => {
-      this.port.open((err) => {
+      this.port?.open((err) => {
         if (err) {
           reject(err);
           return;
@@ -90,19 +103,20 @@ class SerialPortAdapter {
   /**
    * Close the serial connection and reject pending reads.
    */
-  async close() {
+  async close(): Promise<void> {
     if (!this.port) {
       return;
     }
 
+    const currentPort = this.port;
     this.closed = true;
 
-    this.port.off('data', this.handleData);
-    this.port.off('close', this.handleClose);
+    currentPort.off('data', this.handleData);
+    currentPort.off('close', this.handleClose);
 
-    if (this.port.isOpen) {
+    if (currentPort.isOpen) {
       await new Promise<void>((resolve, reject) => {
-        this.port.close((err) => {
+        currentPort.close((err) => {
           if (err) {
             reject(err);
             return;
@@ -117,8 +131,10 @@ class SerialPortAdapter {
 
     while (this.pendingReads.length > 0) {
       const pending = this.pendingReads.shift();
-      clearTimeout(pending.timeoutId);
-      pending.reject(new Error('Port closed'));
+      if (pending) {
+        clearTimeout(pending.timeoutId);
+        pending.reject(new Error('Port closed'));
+      }
     }
   }
 
@@ -127,7 +143,7 @@ class SerialPortAdapter {
    * @param {number} [timeoutMs] Optional timeout in milliseconds.
    * @returns {Promise<Uint8Array>}
    */
-  read(timeoutMs) {
+  read(timeoutMs?: number): Promise<Uint8Array> {
     const effectiveTimeout = Number.isInteger(timeoutMs) ? timeoutMs : this.defaultReadTimeoutMs;
 
     if (!this.isOpen()) {
@@ -135,7 +151,7 @@ class SerialPortAdapter {
     }
 
     if (this.rxQueue.length > 0) {
-      return Promise.resolve(this.rxQueue.shift());
+      return Promise.resolve(this.rxQueue.shift() as Uint8Array);
     }
 
     return new Promise((resolve, reject) => {
@@ -155,21 +171,22 @@ class SerialPortAdapter {
    * Write bytes to the port and wait for drain.
    * @param {Buffer|Uint8Array|Array<number>|string} data
    */
-  async write(data) {
+  async write(data: Buffer | Uint8Array | number[] | string): Promise<void> {
     if (!this.isOpen()) {
       throw new Error('Port is not open');
     }
 
     const buffer = Buffer.from(data);
 
+    const currentPort = this.port;
     await new Promise<void>((resolve, reject) => {
-      this.port.write(buffer, (err) => {
+      currentPort?.write(buffer, (err) => {
         if (err) {
           reject(err);
           return;
         }
 
-        this.port.drain((drainErr) => {
+        currentPort?.drain((drainErr) => {
           if (drainErr) {
             reject(drainErr);
             return;
@@ -189,12 +206,12 @@ class SerialPortAdapter {
    *
    * @param {{dataTerminalReady?: boolean, requestToSend?: boolean}} lineParams
    */
-  async control(lineParams) {
+  async control(lineParams: SerialControlParams): Promise<void> {
     if (!this.isOpen()) {
       throw new Error('Port is not open');
     }
 
-    const setValues = /** @type {{dtr?: boolean, rts?: boolean}} */ ({});
+    const setValues: { dtr?: boolean; rts?: boolean } = {};
 
     if (typeof lineParams.dataTerminalReady === 'boolean') {
       setValues.dtr = lineParams.dataTerminalReady;
@@ -208,8 +225,9 @@ class SerialPortAdapter {
       return;
     }
 
+    const currentPort = this.port;
     await new Promise<void>((resolve, reject) => {
-      this.port.set(setValues, (err) => {
+      currentPort?.set(setValues, (err) => {
         if (err) {
           reject(err);
           return;
@@ -223,13 +241,15 @@ class SerialPortAdapter {
    * Internal data event handler.
    * @param {Buffer} chunk
    */
-  handleData(chunk) {
+  handleData(chunk: Buffer): void {
     const data = Uint8Array.from(chunk);
 
     if (this.pendingReads.length > 0) {
       const pending = this.pendingReads.shift();
-      clearTimeout(pending.timeoutId);
-      pending.resolve(data);
+      if (pending) {
+        clearTimeout(pending.timeoutId);
+        pending.resolve(data);
+      }
       return;
     }
 
@@ -239,9 +259,7 @@ class SerialPortAdapter {
   /**
    * Internal close event handler.
    */
-  handleClose() {
+  handleClose(): void {
     this.closed = true;
   }
 }
-
-module.exports = SerialPortAdapter;

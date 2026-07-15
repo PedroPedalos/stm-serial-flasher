@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-'use strict';
 
-const fs = require('node:fs/promises');
-const os = require('node:os');
-const path = require('node:path');
-const SerialPortAdapter = require('./serialport-adapter');
-const STM32Api = require('./stm32-api');
-const DfuUtilApi = require('./dfu-util-api');
-const tools = require('./utils');
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import SerialPortAdapter from './serialport-adapter';
+import STM32Api from './stm32-api';
+import DfuUtilApi from './dfu-util-api';
+import * as tools from './utils';
 
 function printUsage() {
   console.log('STM32 Node Flasher (UART + USB DFU)');
@@ -68,7 +67,7 @@ function parseArgs(argv) {
     dfuDevice: null,
     rombootPort: null,
     rombootBaudrate: '115200',
-    rombootCommand: 'sys romboot',
+    rombootCommand: 'sys romboot triton',
     rombootEol: 'cr',
     rombootTimeoutMs: '15000',
     file: null,
@@ -239,8 +238,8 @@ async function sendRombootCommand(args) {
     // Enter target command-line mode before issuing sys romboot.
     console.log('Sending initial CR to enter command-line mode...');
     await serial.write(Buffer.from('\r', 'utf8'));
-    await waitForSerialPrompt(serial, 'CHGR>', 3000);
-    console.log('Detected command-line prompt: CHGR>');
+    //await waitForSerialPrompt(serial, 'CHGR>', 3000);
+    //console.log('Detected command-line prompt: CHGR>');
 
     const payload = Buffer.from(command + eol, 'utf8');
     console.log('Sending romboot command: ' + command);
@@ -287,7 +286,7 @@ function buildDfuAddress(args, startAddress) {
   }
 
   const base = '0x' + startAddress.toString(16);
-  return args.go ? base + ':leave' : base;
+  return base + ':leave';
 }
 
 function buildRawBinaryFromRecords(records) {
@@ -323,13 +322,69 @@ function buildRawBinaryFromRecords(records) {
   };
 }
 
+function buildContiguousSegmentsFromRecords(records) {
+  const dataRecords = records
+    .filter((rec) => rec.type === 'data')
+    .sort((a, b) => a.address - b.address);
+
+  if (!dataRecords.length) {
+    throw new Error('No data records found in input file');
+  }
+
+  const segments = [];
+  let currentStart = dataRecords[0].address;
+  let currentEnd = currentStart;
+  let currentParts = [];
+
+  for (const rec of dataRecords) {
+    if (!Number.isInteger(rec.address) || rec.address < 0) {
+      throw new Error('Invalid record address in input file');
+    }
+
+    if (currentParts.length === 0) {
+      currentStart = rec.address;
+      currentEnd = rec.address;
+    }
+
+    if (rec.address < currentEnd) {
+      throw new Error('Overlapping data records are not supported in DFU conversion');
+    }
+
+    if (rec.address > currentEnd) {
+      segments.push({
+        addressBase: currentStart,
+        image: Buffer.concat(currentParts)
+      });
+      currentParts = [];
+      currentStart = rec.address;
+      currentEnd = rec.address;
+    }
+
+    currentParts.push(Buffer.from(rec.data));
+    currentEnd = rec.address + rec.data.length;
+  }
+
+  if (currentParts.length > 0) {
+    segments.push({
+      addressBase: currentStart,
+      image: Buffer.concat(currentParts)
+    });
+  }
+
+  return segments;
+}
+
 async function prepareDfuInputFile(args, absoluteFile, startAddress) {
   const ext = tools.extension(absoluteFile);
 
   if (ext === 'bin') {
     return {
-      filePath: absoluteFile,
-      addressBase: startAddress,
+      segments: [
+        {
+          filePath: absoluteFile,
+          addressBase: startAddress
+        }
+      ],
       cleanup: null
     };
   }
@@ -343,14 +398,25 @@ async function prepareDfuInputFile(args, absoluteFile, startAddress) {
     ? tools.parseSRec(false, 256, text)
     : tools.parseHex(false, 256, text);
 
-  const raw = buildRawBinaryFromRecords(records);
+  const segments = buildContiguousSegmentsFromRecords(records);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'stm-dfu-'));
-  const tempFile = path.join(tempDir, path.basename(absoluteFile, path.extname(absoluteFile)) + '.bin');
-  await fs.writeFile(tempFile, raw.image);
+  const createdSegments = [];
+
+  for (let i = 0; i < segments.length; i += 1) {
+    const segment = segments[i];
+    const tempFile = path.join(
+      tempDir,
+      path.basename(absoluteFile, path.extname(absoluteFile)) + '-seg-' + String(i + 1).padStart(2, '0') + '.bin'
+    );
+    await fs.writeFile(tempFile, segment.image);
+    createdSegments.push({
+      filePath: tempFile,
+      addressBase: segment.addressBase
+    });
+  }
 
   return {
-    filePath: tempFile,
-    addressBase: raw.baseAddress,
+    segments: createdSegments,
     cleanup: async () => {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -374,14 +440,18 @@ async function runDfuFlash(args, absoluteFile, startAddress) {
   console.log('DFU mode selected. Ensure MCU is already in ROM DFU bootloader mode before continuing.');
   console.log('Tip: run with --list-dfu first to verify enumeration.');
 
-  const dfuAddress = buildDfuAddress(args, prepared.addressBase);
+  if (args.dfuAddress && prepared.segments.length > 1) {
+    throw new Error('--dfu-address cannot be used with sparse HEX/S19 input that resolves to multiple DFU segments');
+  }
 
   console.log('Flashing file via DFU: ' + absoluteFile);
-  if (prepared.filePath !== absoluteFile) {
-    console.log('Converted firmware to raw binary for dfu-util: ' + prepared.filePath);
+  if (prepared.segments.length === 1 && prepared.segments[0].filePath !== absoluteFile) {
+    console.log('Converted firmware to raw binary for dfu-util: ' + prepared.segments[0].filePath);
+  }
+  if (prepared.segments.length > 1) {
+    console.log('Detected sparse image. Flashing ' + prepared.segments.length + ' contiguous segments to preserve gaps.');
   }
   console.log('DFU alt setting: ' + alt);
-  console.log('DFU address: ' + dfuAddress);
   if (args.dfuDevice) {
     console.log('DFU device filter: ' + args.dfuDevice);
   }
@@ -389,23 +459,33 @@ async function runDfuFlash(args, absoluteFile, startAddress) {
   let lastPercent = -1;
   let output = '';
   try {
-    output = await dfuApi.download({
-      alt,
-      dfuAddress,
-      deviceFilter: args.dfuDevice,
-      filePath: prepared.filePath,
-      onProgress: (percent) => {
-        if (percent === lastPercent) {
-          return;
-        }
+    for (let i = 0; i < prepared.segments.length; i += 1) {
+      const segment = prepared.segments[i];
+      const isLastSegment = i === prepared.segments.length - 1;
+      const dfuAddress = args.dfuAddress || ('0x' + segment.addressBase.toString(16) + (isLastSegment ? ':leave' : ''));
 
-        lastPercent = percent;
-        process.stdout.write('\rDFU progress: ' + String(percent).padStart(3, ' ') + '%');
-        if (percent >= 100) {
-          process.stdout.write('\n');
+      console.log('DFU address (segment ' + (i + 1) + '/' + prepared.segments.length + '): ' + dfuAddress);
+      console.log('Segment file: ' + segment.filePath);
+
+      lastPercent = -1;
+      output = await dfuApi.download({
+        alt,
+        dfuAddress,
+        deviceFilter: args.dfuDevice,
+        filePath: segment.filePath,
+        onProgress: (percent) => {
+          if (percent === lastPercent) {
+            return;
+          }
+
+          lastPercent = percent;
+          process.stdout.write('\rDFU progress: ' + String(percent).padStart(3, ' ') + '%');
+          if (percent >= 100) {
+            process.stdout.write('\n');
+          }
         }
-      }
-    });
+      });
+    }
   } finally {
     if (prepared.cleanup) {
       await prepared.cleanup();
@@ -423,7 +503,7 @@ async function runDfuFlash(args, absoluteFile, startAddress) {
   console.log('DFU flash process completed successfully.');
 }
 
-async function loadRecords(filePath, writeBlockSize, startAddress) {
+async function loadRecords(filePath, writeBlockSize, startAddress): Promise<tools.ParsedRecord[]> {
   const ext = tools.extension(filePath);
 
   if (!ext) {
@@ -434,7 +514,7 @@ async function loadRecords(filePath, writeBlockSize, startAddress) {
     const bin = await fs.readFile(filePath);
     return [
       {
-        type: 'data',
+        type: 'data' as const,
         address: startAddress,
         data: new Uint8Array(bin)
       }

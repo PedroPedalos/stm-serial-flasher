@@ -12,6 +12,13 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "npm run -s nodeapp:run": true
+        "npm run -s nodeapp:run": true,
+        "npm run -s build": true,
+        "npm run -s nodeapp:list-dfu": true,
+        "true": true,
+        "/^cd /Users/psm/Documents/Source/stm-serial-flasher && node - <<'NODE'\nconst fs=require\\('fs'\\);\nconst files=\\['Charger-BL-FW\\.hex','Charger-BL-FW-1\\.1\\.hex','CH0202FW1\\.1\\.hex'\\]\\.filter\\(f=>fs\\.existsSync\\(f\\)\\);\nfor\\(const f of files\\)\\{\n  const lines=fs\\.readFileSync\\(f,'utf8'\\)\\.split\\(/\\\\r\\?\\\\n/\\)\\.filter\\(Boolean\\);\n  let base=0,min=Infinity,max=0,data=0,start=null;\n  for\\(const line of lines\\)\\{\n    if\\(line\\[0\\]!==':'\\) continue;\n    const len=parseInt\\(line\\.slice\\(1,3\\),16\\);\n    const addr=parseInt\\(line\\.slice\\(3,7\\),16\\);\n    const type=parseInt\\(line\\.slice\\(7,9\\),16\\);\n    const dataHex=line\\.slice\\(9,9\\+len\\*2\\);\n    if\\(type===4\\)\\{\n      const upper=parseInt\\(dataHex,16\\);\n      base=upper<<16;\n    \\} else if\\(type===0\\)\\{\n      const a=base\\+addr;\n      if\\(a<min\\) min=a;\n      if\\(a\\+len>max\\) max=a\\+len;\n      data\\+=len;\n    \\} else if\\(type===5\\)\\{\n      start=parseInt\\(dataHex,16\\);\n    \\}\n  \\}\n  console\\.log\\(`== \\$\\{f\\} ==`\\);\n  console\\.log\\('min', '0x'\\+min\\.toString\\(16\\), 'max', '0x'\\+max\\.toString\\(16\\), 'span', max-min, 'dataBytes', data, 'startRecord', start===null\\?'none':'0x'\\+start\\.toString\\(16\\)\\);\n\\}\nNODE$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

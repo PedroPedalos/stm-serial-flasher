@@ -1,7 +1,6 @@
-// @ts-nocheck
-'use strict';
-
-const { spawn } = require('node:child_process');
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 /**
  * Thin wrapper around the dfu-util CLI for STM32 USB DFU workflows.
@@ -43,19 +42,106 @@ function stripDfuUtilBanner(output) {
   return filtered.join('\n').trim();
 }
 
+function isExecutableFile(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function prependPathList(existing: string | undefined, addition: string): string {
+  if (!existing) {
+    return addition;
+  }
+
+  return addition + path.delimiter + existing;
+}
+
+function dfuFolderForHost(platform: NodeJS.Platform, arch: string): string | null {
+  if (platform === 'darwin') {
+    if (arch === 'arm64') {
+      return 'darwin-arm64';
+    }
+
+    if (arch === 'x64') {
+      return 'darwin-x86_64';
+    }
+
+    return null;
+  }
+
+  if (platform === 'linux' && arch === 'x64') {
+    return 'linux-amd64';
+  }
+
+  if (platform === 'win32' && arch === 'x64') {
+    return 'win64';
+  }
+
+  return null;
+}
+
+function bundledBinaryNameForHost(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? 'dfu-util.exe' : 'dfu-util';
+}
+
+function resolveBundledDfuUtilBinary(platform: NodeJS.Platform, arch: string): string | null {
+  const dfuFolder = dfuFolderForHost(platform, arch);
+  if (!dfuFolder) {
+    return null;
+  }
+
+  const binaryName = bundledBinaryNameForHost(platform);
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  const binaryPath = path.join(repoRoot, 'dfu-util-binaries', dfuFolder, binaryName);
+
+  return isExecutableFile(binaryPath) ? binaryPath : null;
+}
+
+function buildCommandEnvironment(commandPath: string, platform: NodeJS.Platform): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  if (!commandPath || !path.isAbsolute(commandPath)) {
+    return env;
+  }
+
+  const binDir = path.dirname(commandPath);
+  if (platform === 'darwin') {
+    env.DYLD_LIBRARY_PATH = prependPathList(env.DYLD_LIBRARY_PATH, binDir);
+  } else if (platform === 'linux') {
+    env.LD_LIBRARY_PATH = prependPathList(env.LD_LIBRARY_PATH, binDir);
+  } else if (platform === 'win32') {
+    env.Path = prependPathList(env.Path || env.PATH, binDir);
+    env.PATH = env.Path;
+  }
+
+  return env;
+}
+
 /**
  * Execute an external command and collect stdout/stderr.
  *
  * @param {string} cmd Executable name or absolute path.
  * @param {string[]} args Command arguments.
- * @param {{onChunk?:(stream:'stdout'|'stderr',text:string)=>void}} [options]
+ * @param {{onChunk?:(stream:'stdout'|'stderr',text:string)=>void,env?:Record<string,string|undefined>}} [options]
  * Optional live output callback for stream processing.
  * @returns {Promise<{stdout:string,stderr:string}>}
  */
-function runCommand(cmd, args, options = {}) {
+function runCommand(
+  cmd: string,
+  args: string[],
+  options: {
+    onChunk?: (stream: 'stdout' | 'stderr', text: string) => void;
+    env?: NodeJS.ProcessEnv;
+  } = {}
+): Promise<{ stdout: string; stderr: string }> {
   const opts = options;
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: opts.env || process.env
+    });
     let stdout = '';
     let stderr = '';
 
@@ -85,7 +171,11 @@ function runCommand(cmd, args, options = {}) {
         return;
       }
 
-      const err = /** @type {Error & {code?: number|string, stdout?: string, stderr?: string}} */ (new Error('Command failed: ' + cmd + ' ' + args.join(' ')));
+      const err = new Error('Command failed: ' + cmd + ' ' + args.join(' ')) as Error & {
+        code?: number | string;
+        stdout?: string;
+        stderr?: string;
+      };
       err.code = code;
       err.stdout = stdout;
       err.stderr = stderr;
@@ -104,7 +194,7 @@ function runCommand(cmd, args, options = {}) {
  * @param {{buffer:string,lastPercent:number}} state Mutable parser state.
  * @returns {number|null} Next progress percentage (0..100) or null.
  */
-function parseProgressPercent(text, state) {
+function parseProgressPercent(text: string, state: { buffer: string; lastPercent: number }): number | null {
   const parseState = state;
   parseState.buffer += text;
   if (parseState.buffer.length > 2048) {
@@ -136,14 +226,23 @@ function parseProgressPercent(text, state) {
  * @param {{message:string,code?:number|string,stdout?:string,stderr?:string}} error
  * @returns {Error & {code?:number|string,stdout?:string,stderr?:string}}
  */
-function enrichCommandError(error) {
+function enrichCommandError(error: {
+  message: string;
+  code?: number | string;
+  stdout?: string;
+  stderr?: string;
+}): Error & { code?: number | string; stdout?: string; stderr?: string } {
   const details = stripDfuUtilBanner([
     error && error.stderr ? error.stderr : '',
     error && error.stdout ? error.stdout : ''
   ].join('\n'));
 
   const message = details ? error.message + '\n' + details : error.message;
-  const wrapped = /** @type {Error & {code?: number|string, stdout?: string, stderr?: string}} */ (new Error(message));
+  const wrapped = new Error(message) as Error & {
+    code?: number | string;
+    stdout?: string;
+    stderr?: string;
+  };
   wrapped.code = error.code;
   wrapped.stdout = error.stdout;
   wrapped.stderr = error.stderr;
@@ -153,20 +252,42 @@ function enrichCommandError(error) {
 /**
  * API wrapper for dfu-util operations.
  */
-class DfuUtilApi {
+type DfuDownloadParams = {
+  alt: number | string;
+  dfuAddress: string;
+  deviceFilter?: string | null;
+  filePath: string;
+  onProgress?: (percent: number) => void;
+  onLog?: (text: string) => void;
+};
+
+export default class DfuUtilApi {
+  commandPath: string;
+  commandEnv: NodeJS.ProcessEnv;
+
+  constructor(options: { commandPath?: string } = {}) {
+    const opts = options || {};
+    const resolvedBinary = resolveBundledDfuUtilBinary(process.platform, process.arch);
+
+    this.commandPath = opts.commandPath || resolvedBinary || 'dfu-util';
+    this.commandEnv = buildCommandEnvironment(this.commandPath, process.platform);
+  }
+
   /**
    * Ensure dfu-util is available in PATH.
    *
    * @returns {Promise<void>}
    * @throws {Error} If dfu-util cannot be executed.
    */
-  async ensureAvailable() {
+  async ensureAvailable(): Promise<void> {
     try {
-      await runCommand('dfu-util', ['--version']);
+      await runCommand(this.commandPath, ['--version'], {
+        env: this.commandEnv
+      });
     } catch (error) {
       const err = /** @type {any} */ (error);
       if (err.code === 'ENOENT') {
-        throw new Error('dfu-util is not installed. Install it first, for example on macOS: brew install dfu-util');
+        throw new Error('dfu-util is not available for this host. Install it first (for example on macOS: brew install dfu-util) or add matching binary in dfu-util-binaries for ' + process.platform + '/' + process.arch);
       }
 
       const details = [err.stderr, err.stdout].filter(Boolean).join('\n').trim();
@@ -183,10 +304,12 @@ class DfuUtilApi {
    * @returns {Promise<string>} Cleaned dfu-util list output.
    * @throws {Error} If listing fails.
    */
-  async listDevices() {
+  async listDevices(): Promise<string> {
     await this.ensureAvailable();
     try {
-      const result = await runCommand('dfu-util', ['-l']);
+      const result = await runCommand(this.commandPath, ['-l'], {
+        env: this.commandEnv
+      });
       const merged = [result.stdout, result.stderr].filter(Boolean).join('\n');
       return stripDfuUtilBanner(merged);
     } catch (error) {
@@ -210,7 +333,7 @@ class DfuUtilApi {
    * @throws {Error} If download fails. The error message includes cleaned
    * dfu-util diagnostics.
    */
-  async download(params) {
+  async download(params: DfuDownloadParams): Promise<string> {
     await this.ensureAvailable();
 
     const args = ['-a', String(params.alt)];
@@ -228,7 +351,8 @@ class DfuUtilApi {
     };
 
     try {
-      const result = await runCommand('dfu-util', args, {
+      const result = await runCommand(this.commandPath, args, {
+        env: this.commandEnv,
         onChunk: (_stream, text) => {
           if (typeof params.onLog === 'function') {
             params.onLog(text);
@@ -249,5 +373,3 @@ class DfuUtilApi {
     }
   }
 }
-
-module.exports = DfuUtilApi;

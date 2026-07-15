@@ -1,13 +1,28 @@
-// @ts-nocheck
-'use strict';
+import path from 'node:path';
 
-const path = require('node:path');
+export type DataRecord = {
+  type: 'data';
+  length?: number;
+  address: number;
+  data: Uint8Array;
+  checksum?: number;
+};
 
-function sum(array) {
+export type StartRecord = {
+  type: 'start';
+  length?: number;
+  address: number;
+  data?: Uint8Array;
+  checksum?: number;
+};
+
+export type ParsedRecord = DataRecord | StartRecord;
+
+function sum(array: Uint8Array): number {
   return array.reduce((a, b) => a + b, 0);
 }
 
-function hexstr2uintarray(str) {
+function hexstr2uintarray(str: string): Uint8Array {
   const result = new Uint8Array(str.length / 2);
   for (let i = 0; i < str.length / 2; i += 1) {
     result[i] = parseInt(str.substr(i * 2, 2), 16);
@@ -15,11 +30,11 @@ function hexstr2uintarray(str) {
   return result;
 }
 
-function packRecords(records, blockSize) {
+function packRecords(records: ParsedRecord[], blockSize: number): ParsedRecord[] {
   let offset = 0;
-  const result = [];
+  const result: ParsedRecord[] = [];
 
-  const minAddress = () => {
+  const minAddress = (): number => {
     let min = -1;
     for (const rec of records) {
       if (rec.type !== 'data') {
@@ -32,7 +47,7 @@ function packRecords(records, blockSize) {
     return min;
   };
 
-  const findRecord = (address) => {
+  const findRecord = (address: number): DataRecord | null => {
     for (const rec of records) {
       if (rec.type === 'data' && rec.address === address) {
         return rec;
@@ -41,10 +56,10 @@ function packRecords(records, blockSize) {
     return null;
   };
 
-  const findStartRecord = () => {
+  const findStartRecord = (): StartRecord | null => {
     for (const rec of records) {
       if (rec.type === 'start') {
-        return rec;
+        return rec as StartRecord;
       }
     }
     return null;
@@ -64,9 +79,10 @@ function packRecords(records, blockSize) {
     }
 
     const dataBuffer = new Uint8Array(blockSize);
-    const newRecord = {
+    const newRecord: DataRecord = {
       type: 'data',
-      address: startAddress
+      address: startAddress,
+      data: new Uint8Array(0)
     };
 
     while (true) {
@@ -91,8 +107,8 @@ function packRecords(records, blockSize) {
   return result;
 }
 
-function parseSRec(combine, blockSize, fileContent) {
-  const records = [];
+export function parseSRec(combine: boolean, blockSize: number, fileContent: string): ParsedRecord[] {
+  const records: ParsedRecord[] = [];
   const lines = fileContent.split('\n');
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -108,7 +124,13 @@ function parseSRec(combine, blockSize, fileContent) {
 
     const type = parseInt(line.substr(1, 1), 10);
     let addrLength = 0;
-    const record = { type: null };
+    const record: {
+      type: 'data' | 'start' | null;
+      length?: number;
+      address?: number;
+      data?: Uint8Array;
+      checksum?: number;
+    } = { type: null };
 
     if (type === 1) {
       addrLength = 4;
@@ -136,15 +158,15 @@ function parseSRec(combine, blockSize, fileContent) {
       throw new Error('Checksum in line ' + (i + 1) + ' does not match');
     }
 
-    records.push(record);
+    records.push(record as ParsedRecord);
   }
 
   return combine ? packRecords(records, blockSize) : records;
 }
 
-function parseHex(combine, blockSize, fileContent) {
+export function parseHex(combine: boolean, blockSize: number, fileContent: string): ParsedRecord[] {
   const lines = fileContent.split('\n');
-  const records = [];
+  const records: ParsedRecord[] = [];
   let base = 0;
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -159,7 +181,13 @@ function parseHex(combine, blockSize, fileContent) {
     }
 
     const type = parseInt(line.substr(7, 2), 16);
-    const record = {
+    const record: {
+      type?: 'data' | 'start';
+      length: number;
+      address: number;
+      data?: Uint8Array;
+      checksum?: number;
+    } = {
       length: parseInt(line.substr(1, 2), 16),
       address: parseInt(line.substr(3, 4), 16)
     };
@@ -178,27 +206,27 @@ function parseHex(combine, blockSize, fileContent) {
 
     if (type === 0) {
       record.type = 'data';
-      records.push(record);
+      records.push(record as ParsedRecord);
     } else if (type === 4) {
       base = (record.data[0] << 24) + (record.data[1] << 16);
     } else if (type === 5) {
       record.type = 'start';
       record.address = parseInt(line.substr(9, record.length * 2), 16);
-      records.push(record);
+      records.push(record as ParsedRecord);
     }
   }
 
   return combine ? packRecords(records, blockSize) : records;
 }
 
-function extension(fileName) {
+export function extension(fileName: string | null | undefined): string | null {
   const ext = path.extname(fileName || '');
   return ext.startsWith('.') ? ext.substring(1).toLowerCase() : null;
 }
 
-function num2a(number, arraySize) {
+export function num2a(number: number, arraySize: number): number[] {
   let temp = number;
-  const result = [];
+  const result: number[] = [];
 
   for (let i = 0; i < arraySize; i += 1) {
     result.unshift(temp & 0xFF);
@@ -208,11 +236,11 @@ function num2a(number, arraySize) {
   return result;
 }
 
-function b2hexstr(byte) {
+export function b2hexstr(byte: number): string {
   return ('00' + byte.toString(16)).substr(-2);
 }
 
-function countData(records) {
+export function countData(records: ParsedRecord[]): number {
   let total = 0;
   for (const rec of records) {
     if (rec.type === 'data') {
@@ -221,12 +249,3 @@ function countData(records) {
   }
   return total;
 }
-
-module.exports = {
-  parseSRec,
-  parseHex,
-  extension,
-  num2a,
-  b2hexstr,
-  countData
-};
