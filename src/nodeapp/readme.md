@@ -16,7 +16,8 @@ then performs the DFU flash flow.
 
 - CLI entrypoint: src/nodeapp/cli.ts
 - Serial adapter: src/nodeapp/serialport-adapter.ts
-- STM32 protocol API: src/nodeapp/stm32-api.ts
+- STM32 protocol API: src/nodeapp/stm32-api/index.ts
+- DFU transport API: src/nodeapp/dfu-api/index.ts
 - File parsing utilities: src/nodeapp/utils.ts
 
 ## Requirements
@@ -104,6 +105,8 @@ Output:
 
     Options:
       -f, --file <path>           Firmware/bootloader file (.bin, .hex, .ihx, .s19)
+          --merge-with <path>     Additional Intel HEX file to merge before flashing (ex: bootloader HEX)
+          --merge-output <path>   Save merged Intel HEX to this path (default: temporary file)
       -t, --transport <mode>      Transport mode: uart | dfu | dfu-romboot (default: uart)
       -p, --port <path>           UART serial port path (example: /dev/tty.usbserial-0001)
       -b, --baudrate <number>     Baud rate (default: 9600)
@@ -138,6 +141,8 @@ Optional:
 - --transport uart or dfu, default uart
 - --baudrate serial baud rate, default 9600
 - --start-address start address for binary files, default 0x08000000
+- --merge-with additional Intel HEX file merged with --file before flashing
+- --merge-output path to persist merged Intel HEX (if omitted, a temporary merged file is used)
 - --go send GO command after flash completes
 - --reply-mode enables bootloader reply mode and parity none
 - --no-erase skips full erase before writing
@@ -165,6 +170,7 @@ Behavior:
 - Binary files are flashed from --start-address.
 - HEX and S19 records are parsed and flashed by record address.
 - Start records are recognized and used by --go when present.
+- For Intel HEX, you can combine bootloader + firmware using `--merge-with` fully in Node.js (no external merge tool).
 
 ## Typical Workflows
 
@@ -203,6 +209,14 @@ Behavior:
 9. Trigger romboot over UART, then flash over DFU:
 
   npm run nodeapp:run-romboot-dfu -- --romboot-port /dev/tty.usbmodem205C337C46421 --romboot-command "sys romboot" --go
+
+10. Merge bootloader HEX + firmware HEX and flash as one image (UART):
+
+  npm run nodeapp:run -- --file ./firmware.hex --merge-with ./bootloader.hex --port /dev/tty.usbserial-0001
+
+11. Merge bootloader HEX + firmware HEX and save merged output for reuse:
+
+  npm run nodeapp:run -- --file ./firmware.hex --merge-with ./bootloader.hex --merge-output ./combined-image.hex --port /dev/tty.usbserial-0001
 
 ## Debugging
 
@@ -249,7 +263,7 @@ Example main-process usage:
 
 ```javascript
 const { ipcMain } = require('electron');
-const DfuUtilApi = require('./src/nodeapp/dfu-util-api');
+const DfuUtilApi = require('./src/nodeapp/dfu-api');
 
 ipcMain.handle('flash:dfu', async (event, payload) => {
   const dfu = new DfuUtilApi();

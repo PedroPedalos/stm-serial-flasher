@@ -4,10 +4,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import SerialPortAdapter from './serialport-adapter';
-import STM32Api from './stm32-api';
-import DfuUtilApi from './dfu-util-api';
+import STM32Api from './stm32-api/stm32-api';
+import DfuUtilApi from './dfu-api/dfu-api';
 import * as tools from './utils';
 
+/**
+ * Print CLI usage and available options.
+ */
 function printUsage() {
   console.log('STM32 Node Flasher (UART + USB DFU)');
   console.log('');
@@ -18,6 +21,8 @@ function printUsage() {
   console.log('');
   console.log('Options:');
   console.log('  -f, --file <path>           Firmware/bootloader file (.bin, .hex, .ihx, .s19)');
+  console.log('      --merge-with <path>     Additional Intel HEX file to merge before flashing (ex: bootloader HEX)');
+  console.log('      --merge-output <path>   Save merged Intel HEX to this path (default: temporary file)');
   console.log('  -t, --transport <mode>      Transport mode: uart | dfu | dfu-romboot (default: uart)');
   console.log('  -p, --port <path>           UART serial port path (example: /dev/tty.usbserial-0001)');
   console.log('  -b, --baudrate <number>     Baud rate (default: 9600)');
@@ -38,6 +43,12 @@ function printUsage() {
   console.log('  -h, --help                  Show this help');
 }
 
+/**
+ * Parse a numeric address from CLI input.
+ *
+ * Accepts decimal or hex-compatible string forms that Number() can parse
+ * (for example "0x08000000" or "134217728").
+ */
 function parseAddress(value) {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new Error('Invalid start address');
@@ -51,6 +62,12 @@ function parseAddress(value) {
   return parsed;
 }
 
+/**
+ * Parse command-line arguments into a normalized options object.
+ *
+ * This parser is intentionally simple and dependency-free because the project
+ * runs in constrained environments and needs predictable option behavior.
+ */
 function parseArgs(argv) {
   const opts = {
     help: false,
@@ -70,6 +87,8 @@ function parseArgs(argv) {
     rombootCommand: 'sys romboot triton',
     rombootEol: 'cr',
     rombootTimeoutMs: '15000',
+    mergeWith: null,
+    mergeOutput: null,
     file: null,
     port: null
   };
@@ -109,6 +128,10 @@ function parseArgs(argv) {
       opts.erase = false;
     } else if (arg === '-f' || arg === '--file') {
       opts.file = argv[++i];
+    } else if (arg === '--merge-with') {
+      opts.mergeWith = argv[++i];
+    } else if (arg === '--merge-output') {
+      opts.mergeOutput = argv[++i];
     } else if (arg === '-p' || arg === '--port') {
       opts.port = argv[++i];
     } else if (arg === '-b' || arg === '--baudrate') {
@@ -125,6 +148,65 @@ function parseArgs(argv) {
   return opts;
 }
 
+/**
+ * Optionally merge two Intel HEX files into a single image before flashing.
+ *
+ * `--file` is treated as the primary firmware image while `--merge-with`
+ * contributes additional records (for example, a bootloader image).
+ */
+async function prepareInputFile(args, absoluteFile) {
+  if (!args.mergeWith) {
+    return {
+      filePath: absoluteFile,
+      cleanup: null
+    };
+  }
+
+  const mergeWithFile = path.resolve(args.mergeWith);
+  const primaryExt = tools.extension(absoluteFile);
+  const secondaryExt = tools.extension(mergeWithFile);
+  const validHexExt = new Set(['hex', 'ihx']);
+
+  if (!validHexExt.has(primaryExt || '')) {
+    throw new Error('--merge-with requires --file to be .hex or .ihx');
+  }
+
+  if (!validHexExt.has(secondaryExt || '')) {
+    throw new Error('--merge-with file must be .hex or .ihx');
+  }
+
+  const [secondaryHex, primaryHex] = await Promise.all([
+    fs.readFile(mergeWithFile, 'utf8'),
+    fs.readFile(absoluteFile, 'utf8')
+  ]);
+
+  const merged = tools.mergeIntelHexContents(secondaryHex, primaryHex);
+  const outputPath = args.mergeOutput
+    ? path.resolve(args.mergeOutput)
+    : path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'stm-hex-merge-')),
+      path.basename(absoluteFile, path.extname(absoluteFile)) + '-merged.hex'
+    );
+
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fs.writeFile(outputPath, merged.mergedHex, 'utf8');
+
+  console.log('Merged Intel HEX created: ' + outputPath);
+  console.log('Merged payload bytes: ' + merged.byteCount);
+
+  return {
+    filePath: outputPath,
+    cleanup: args.mergeOutput
+      ? null
+      : async () => {
+        await fs.rm(path.dirname(outputPath), { recursive: true, force: true });
+      }
+  };
+}
+
+/**
+ * Enumerate host serial ports and print a human-readable table.
+ */
 async function listPorts() {
   const ports = await SerialPortAdapter.listPorts();
 
@@ -146,6 +228,9 @@ async function listPorts() {
   }
 }
 
+/**
+ * List connected DFU devices through dfu-util.
+ */
 async function listDfuDevices() {
   const dfuApi = new DfuUtilApi();
   const output = await dfuApi.listDevices();
@@ -161,6 +246,9 @@ async function listDfuDevices() {
   console.log(text);
 }
 
+/**
+ * Resolve user-selected EOL mode for the ROM boot command channel.
+ */
 function resolveRombootEol(eol) {
   if (eol === 'none') {
     return '';
@@ -177,6 +265,12 @@ function resolveRombootEol(eol) {
   return '\n';
 }
 
+/**
+ * Wait until a target prompt appears on serial input.
+ *
+ * Reads in short chunks until timeout to keep the loop responsive while still
+ * capturing enough text for troubleshooting on failures.
+ */
 async function waitForSerialPrompt(serial, expectedPrompt, timeoutMs) {
   const started = Date.now();
   let received = '';
@@ -209,6 +303,15 @@ async function waitForSerialPrompt(serial, expectedPrompt, timeoutMs) {
   throw new Error('Timed out waiting for serial prompt ' + expectedPrompt + '. Last response: ' + preview);
 }
 
+/**
+ * Send the command that asks the running firmware to jump to ROM bootloader.
+ *
+ * Flow:
+ * 1. Open UART control port.
+ * 2. Send initial CR to enter shell mode.
+ * 3. Send configured romboot command.
+ * 4. Close UART and return control to DFU flow.
+ */
 async function sendRombootCommand(args) {
   const commandPort = args.rombootPort || args.port;
   if (!commandPort) {
@@ -250,6 +353,9 @@ async function sendRombootCommand(args) {
   }
 }
 
+/**
+ * Poll dfu-util until a DFU-capable USB device is enumerated.
+ */
 async function waitForDfuDevice(args) {
   const timeoutMs = parseInt(args.rombootTimeoutMs, 10);
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
@@ -274,12 +380,24 @@ async function waitForDfuDevice(args) {
   throw new Error('Timed out waiting for DFU device after romboot command');
 }
 
+/**
+ * Hybrid transport flow:
+ * - trigger ROM boot entry on UART
+ * - wait for USB DFU enumeration
+ * - flash using DFU transport
+ */
 async function runDfuRombootFlash(args, absoluteFile, startAddress) {
   await sendRombootCommand(args);
   await waitForDfuDevice(args);
   await runDfuFlash(args, absoluteFile, startAddress);
 }
 
+/**
+ * Build a dfu-util `-s` address string.
+ *
+ * When no explicit address is provided, this defaults to `:leave` so the
+ * target exits DFU mode after the final segment write.
+ */
 function buildDfuAddress(args, startAddress) {
   if (args.dfuAddress) {
     return args.dfuAddress;
@@ -289,6 +407,12 @@ function buildDfuAddress(args, startAddress) {
   return base + ':leave';
 }
 
+/**
+ * Convert sparse records into one padded raw image.
+ *
+ * Kept for compatibility with previous conversion behavior and for cases where
+ * a single contiguous binary is desired.
+ */
 function buildRawBinaryFromRecords(records) {
   const dataRecords = records.filter((rec) => rec.type === 'data');
   if (!dataRecords.length) {
@@ -322,6 +446,12 @@ function buildRawBinaryFromRecords(records) {
   };
 }
 
+/**
+ * Group parsed HEX/S19 records into contiguous flash segments.
+ *
+ * Each segment is emitted as a separate DFU transfer to preserve address gaps
+ * without filling potentially large holes with padding.
+ */
 function buildContiguousSegmentsFromRecords(records) {
   const dataRecords = records
     .filter((rec) => rec.type === 'data')
@@ -374,6 +504,12 @@ function buildContiguousSegmentsFromRecords(records) {
   return segments;
 }
 
+/**
+ * Prepare upload artifacts for DFU mode.
+ *
+ * - BIN input: used directly as one segment.
+ * - HEX/S19 input: parsed and converted to one or more temporary BIN segments.
+ */
 async function prepareDfuInputFile(args, absoluteFile, startAddress) {
   const ext = tools.extension(absoluteFile);
 
@@ -423,6 +559,12 @@ async function prepareDfuInputFile(args, absoluteFile, startAddress) {
   };
 }
 
+/**
+ * Execute DFU flashing for one or multiple segments.
+ *
+ * For sparse HEX/S19 inputs, each contiguous segment is flashed individually
+ * with its own base address.
+ */
 async function runDfuFlash(args, absoluteFile, startAddress) {
   const dfuApi = new DfuUtilApi();
   const alt = parseInt(args.dfuAlt, 10);
@@ -503,6 +645,9 @@ async function runDfuFlash(args, absoluteFile, startAddress) {
   console.log('DFU flash process completed successfully.');
 }
 
+/**
+ * Load firmware into normalized parsed records for UART flashing.
+ */
 async function loadRecords(filePath, writeBlockSize, startAddress): Promise<tools.ParsedRecord[]> {
   const ext = tools.extension(filePath);
 
@@ -534,6 +679,15 @@ async function loadRecords(filePath, writeBlockSize, startAddress): Promise<tool
   throw new Error('Unsupported file extension: .' + ext);
 }
 
+/**
+ * Main program entrypoint.
+ *
+ * Dispatches to:
+ * - list modes (`--list-ports`, `--list-dfu`)
+ * - DFU transport
+ * - UART-triggered DFU transport
+ * - classic UART bootloader transport
+ */
 async function run() {
   const args = parseArgs(process.argv.slice(2));
 
@@ -563,85 +717,94 @@ async function run() {
   const absoluteFile = path.resolve(args.file);
   const startAddress = parseAddress(args.startAddress);
 
-  if (args.transport === 'dfu') {
-    await runDfuFlash(args, absoluteFile, startAddress);
-    return;
-  }
-
-  if (args.transport === 'dfu-romboot') {
-    await runDfuRombootFlash(args, absoluteFile, startAddress);
-    return;
-  }
-
-  if (!args.port) {
-    throw new Error('Missing required argument: --port <serialPort>');
-  }
-
-  const serial = new SerialPortAdapter(args.port);
-  const stmApi = new STM32Api(serial, (msg) => console.log('[STM32] ' + msg));
-
-  let connected = false;
+  const preparedInput = await prepareInputFile(args, absoluteFile);
+  const flashInputFile = preparedInput.filePath;
 
   try {
-    console.log('Flashing file: ' + absoluteFile);
-    console.log('Connecting to port: ' + args.port);
-
-    await stmApi.connect({
-      replyMode: args.replyMode,
-      baudrate: args.baudrate
-    });
-    connected = true;
-
-    const info = await stmApi.cmdGET();
-    const pid = await stmApi.cmdGID();
-
-    console.log('Bootloader: ' + info.blVersion);
-    console.log('Product ID: ' + pid);
-    console.log('Supported commands: ' + info.commands.map((cmd) => '0x' + cmd.toString(16).padStart(2, '0')).join(', '));
-
-    if (args.erase) {
-      console.log('Erasing flash...');
-      await stmApi.eraseAll();
-      console.log('Erase complete.');
-    } else {
-      console.log('Skipping erase (--no-erase).');
+    if (args.transport === 'dfu') {
+      await runDfuFlash(args, flashInputFile, startAddress);
+      return;
     }
 
-    const records = await loadRecords(absoluteFile, stmApi.writeBlockSize, startAddress);
-    const totalDataRecords = tools.countData(records);
-    let writtenRecords = 0;
-    let goAddress = null;
+    if (args.transport === 'dfu-romboot') {
+      await runDfuRombootFlash(args, flashInputFile, startAddress);
+      return;
+    }
 
-    for (const rec of records) {
-      if (rec.type === 'start') {
-        goAddress = rec.address;
-        console.log('Start address detected from file: 0x' + rec.address.toString(16));
-        continue;
+    if (!args.port) {
+      throw new Error('Missing required argument: --port <serialPort>');
+    }
+
+    const serial = new SerialPortAdapter(args.port);
+    const stmApi = new STM32Api(serial, (msg) => console.log('[STM32] ' + msg));
+
+    let connected = false;
+
+    try {
+      console.log('Flashing file: ' + flashInputFile);
+      console.log('Connecting to port: ' + args.port);
+
+      await stmApi.connect({
+        replyMode: args.replyMode,
+        baudrate: args.baudrate
+      });
+      connected = true;
+
+      const info = await stmApi.cmdGET();
+      const pid = await stmApi.cmdGID();
+
+      console.log('Bootloader: ' + info.blVersion);
+      console.log('Product ID: ' + pid);
+      console.log('Supported commands: ' + info.commands.map((cmd) => '0x' + cmd.toString(16).padStart(2, '0')).join(', '));
+
+      if (args.erase) {
+        console.log('Erasing flash...');
+        await stmApi.eraseAll();
+        console.log('Erase complete.');
+      } else {
+        console.log('Skipping erase (--no-erase).');
       }
 
-      if (rec.type !== 'data') {
-        continue;
+      const records = await loadRecords(flashInputFile, stmApi.writeBlockSize, startAddress);
+      const totalDataRecords = tools.countData(records);
+      let writtenRecords = 0;
+      let goAddress = null;
+
+      for (const rec of records) {
+        if (rec.type === 'start') {
+          goAddress = rec.address;
+          console.log('Start address detected from file: 0x' + rec.address.toString(16));
+          continue;
+        }
+
+        if (rec.type !== 'data') {
+          continue;
+        }
+
+        writtenRecords += 1;
+        console.log('Writing record ' + writtenRecords + '/' + totalDataRecords + ' at 0x' + rec.address.toString(16) + ' (' + rec.data.length + ' bytes)');
+        await stmApi.write(rec.data, rec.address);
       }
 
-      writtenRecords += 1;
-      console.log('Writing record ' + writtenRecords + '/' + totalDataRecords + ' at 0x' + rec.address.toString(16) + ' (' + rec.data.length + ' bytes)');
-      await stmApi.write(rec.data, rec.address);
-    }
+      if (args.go) {
+        const jumpAddress = Number.isInteger(goAddress) ? goAddress : startAddress;
+        console.log('Sending GO command to 0x' + jumpAddress.toString(16));
+        await stmApi.cmdGO(jumpAddress);
+      }
 
-    if (args.go) {
-      const jumpAddress = Number.isInteger(goAddress) ? goAddress : startAddress;
-      console.log('Sending GO command to 0x' + jumpAddress.toString(16));
-      await stmApi.cmdGO(jumpAddress);
+      console.log('Flash process completed successfully.');
+    } finally {
+      if (connected) {
+        try {
+          await stmApi.disconnect();
+        } catch (disconnectError) {
+          console.error('Disconnect failed: ' + disconnectError.message);
+        }
+      }
     }
-
-    console.log('Flash process completed successfully.');
   } finally {
-    if (connected) {
-      try {
-        await stmApi.disconnect();
-      } catch (disconnectError) {
-        console.error('Disconnect failed: ' + disconnectError.message);
-      }
+    if (preparedInput.cleanup) {
+      await preparedInput.cleanup();
     }
   }
 }

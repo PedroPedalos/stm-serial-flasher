@@ -42,6 +42,9 @@ function stripDfuUtilBanner(output) {
   return filtered.join('\n').trim();
 }
 
+/**
+ * Check whether a file exists and is executable by the current process.
+ */
 function isExecutableFile(filePath: string): boolean {
   try {
     fs.accessSync(filePath, fs.constants.X_OK);
@@ -51,6 +54,9 @@ function isExecutableFile(filePath: string): boolean {
   }
 }
 
+/**
+ * Prefix PATH-like variables while preserving existing entries.
+ */
 function prependPathList(existing: string | undefined, addition: string): string {
   if (!existing) {
     return addition;
@@ -59,6 +65,9 @@ function prependPathList(existing: string | undefined, addition: string): string
   return addition + path.delimiter + existing;
 }
 
+/**
+ * Map host platform/arch to bundled dfu-util folder naming.
+ */
 function dfuFolderForHost(platform: NodeJS.Platform, arch: string): string | null {
   if (platform === 'darwin') {
     if (arch === 'arm64') {
@@ -83,10 +92,16 @@ function dfuFolderForHost(platform: NodeJS.Platform, arch: string): string | nul
   return null;
 }
 
+/**
+ * Return host-specific dfu-util executable file name.
+ */
 function bundledBinaryNameForHost(platform: NodeJS.Platform): string {
   return platform === 'win32' ? 'dfu-util.exe' : 'dfu-util';
 }
 
+/**
+ * Resolve bundled dfu-util binary path for current host, if present.
+ */
 function resolveBundledDfuUtilBinary(platform: NodeJS.Platform, arch: string): string | null {
   const dfuFolder = dfuFolderForHost(platform, arch);
   if (!dfuFolder) {
@@ -94,12 +109,15 @@ function resolveBundledDfuUtilBinary(platform: NodeJS.Platform, arch: string): s
   }
 
   const binaryName = bundledBinaryNameForHost(platform);
-  const repoRoot = path.resolve(__dirname, '..', '..');
+  const repoRoot = path.resolve(__dirname, '..', '..', '..');
   const binaryPath = path.join(repoRoot, 'dfu-util-binaries', dfuFolder, binaryName);
 
   return isExecutableFile(binaryPath) ? binaryPath : null;
 }
 
+/**
+ * Build child-process env vars so bundled binary can resolve shared libs.
+ */
 function buildCommandEnvironment(commandPath: string, platform: NodeJS.Platform): NodeJS.ProcessEnv {
   const env = { ...process.env };
   if (!commandPath || !path.isAbsolute(commandPath)) {
@@ -266,6 +284,7 @@ export default class DfuUtilApi {
   commandEnv: NodeJS.ProcessEnv;
 
   constructor(options: { commandPath?: string } = {}) {
+    // Prefer caller override, then bundled binary, then PATH lookup.
     const opts = options || {};
     const resolvedBinary = resolveBundledDfuUtilBinary(process.platform, process.arch);
 

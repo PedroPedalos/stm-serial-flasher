@@ -1,16 +1,22 @@
 import { SerialPort } from 'serialport';
 
+/** Pending one-shot read request tracked until data or timeout. */
 type SerialReadResolver = {
   resolve: (value: Uint8Array) => void;
   reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
 };
 
+/** Serial open parameters used by this adapter. */
 type SerialOpenParams = {
   baudRate: number;
   parity?: 'none' | 'even' | 'odd' | 'mark' | 'space';
 };
 
+/**
+ * WebSerial-style control line flags accepted by this adapter.
+ * dataTerminalReady maps to DTR, requestToSend maps to RTS.
+ */
 type SerialControlParams = {
   dataTerminalReady?: boolean;
   requestToSend?: boolean;
@@ -140,6 +146,10 @@ export default class SerialPortAdapter {
 
   /**
    * Read one queued chunk from the serial stream.
+    *
+    * If buffered data is already available, resolves immediately.
+    * Otherwise waits until next data event or timeout.
+    *
    * @param {number} [timeoutMs] Optional timeout in milliseconds.
    * @returns {Promise<Uint8Array>}
    */

@@ -1,6 +1,7 @@
 import path from 'node:path';
 
-export type DataRecord = {
+/** Parsed data payload record (HEX/SREC). */
+type DataRecord = {
   type: 'data';
   length?: number;
   address: number;
@@ -8,7 +9,8 @@ export type DataRecord = {
   checksum?: number;
 };
 
-export type StartRecord = {
+/** Parsed start-address record (HEX/SREC). */
+type StartRecord = {
   type: 'start';
   length?: number;
   address: number;
@@ -16,12 +18,15 @@ export type StartRecord = {
   checksum?: number;
 };
 
+/** Unified record shape returned by parser helpers. */
 export type ParsedRecord = DataRecord | StartRecord;
 
+/** Sum helper used by parser checksum validation. */
 function sum(array: Uint8Array): number {
   return array.reduce((a, b) => a + b, 0);
 }
 
+/** Convert hexadecimal text to raw byte array. */
 function hexstr2uintarray(str: string): Uint8Array {
   const result = new Uint8Array(str.length / 2);
   for (let i = 0; i < str.length / 2; i += 1) {
@@ -30,6 +35,11 @@ function hexstr2uintarray(str: string): Uint8Array {
   return result;
 }
 
+/**
+ * Merge adjacent parsed records into fixed-size contiguous data chunks.
+ *
+ * This is used by UART write flow to reduce command overhead.
+ */
 function packRecords(records: ParsedRecord[], blockSize: number): ParsedRecord[] {
   let offset = 0;
   const result: ParsedRecord[] = [];
@@ -107,6 +117,11 @@ function packRecords(records: ParsedRecord[], blockSize: number): ParsedRecord[]
   return result;
 }
 
+/**
+ * Parse Motorola S-record content.
+ *
+ * @param combine When true, combine adjacent data records into blockSize chunks.
+ */
 export function parseSRec(combine: boolean, blockSize: number, fileContent: string): ParsedRecord[] {
   const records: ParsedRecord[] = [];
   const lines = fileContent.split('\n');
@@ -164,6 +179,11 @@ export function parseSRec(combine: boolean, blockSize: number, fileContent: stri
   return combine ? packRecords(records, blockSize) : records;
 }
 
+/**
+ * Parse Intel HEX content.
+ *
+ * @param combine When true, combine adjacent data records into blockSize chunks.
+ */
 export function parseHex(combine: boolean, blockSize: number, fileContent: string): ParsedRecord[] {
   const lines = fileContent.split('\n');
   const records: ParsedRecord[] = [];
@@ -219,27 +239,13 @@ export function parseHex(combine: boolean, blockSize: number, fileContent: strin
   return combine ? packRecords(records, blockSize) : records;
 }
 
+/** Return lower-case file extension without leading dot, or null. */
 export function extension(fileName: string | null | undefined): string | null {
   const ext = path.extname(fileName || '');
   return ext.startsWith('.') ? ext.substring(1).toLowerCase() : null;
 }
 
-export function num2a(number: number, arraySize: number): number[] {
-  let temp = number;
-  const result: number[] = [];
-
-  for (let i = 0; i < arraySize; i += 1) {
-    result.unshift(temp & 0xFF);
-    temp >>= 8;
-  }
-
-  return result;
-}
-
-export function b2hexstr(byte: number): string {
-  return ('00' + byte.toString(16)).substr(-2);
-}
-
+/** Count payload-bearing records in a parsed record list. */
 export function countData(records: ParsedRecord[]): number {
   let total = 0;
   for (const rec of records) {
@@ -248,4 +254,231 @@ export function countData(records: ParsedRecord[]): number {
     }
   }
   return total;
+}
+
+type ParsedIntelHexLine = {
+  byteCount: number;
+  address: number;
+  recordType: number;
+  data: Uint8Array;
+};
+
+type ParsedIntelHexImage = {
+  bytes: Map<number, number>;
+  startLinearAddress: number | null;
+};
+
+/** Parse a single Intel HEX line and validate its checksum. */
+function parseIntelHexLine(line: string, lineNumber: number): ParsedIntelHexLine {
+  if (!line.startsWith(':')) {
+    throw new Error('Invalid Intel HEX format at line ' + lineNumber + ': missing colon');
+  }
+
+  const payload = line.substring(1);
+  if (payload.length < 10 || payload.length % 2 !== 0) {
+    throw new Error('Invalid Intel HEX format at line ' + lineNumber + ': malformed payload length');
+  }
+
+  const raw = hexstr2uintarray(payload);
+  if (sum(raw) % 256 !== 0) {
+    throw new Error('Checksum mismatch at Intel HEX line ' + lineNumber);
+  }
+
+  const byteCount = raw[0];
+  const address = (raw[1] << 8) | raw[2];
+  const recordType = raw[3];
+  const data = raw.subarray(4, raw.length - 1);
+
+  if (data.length !== byteCount) {
+    throw new Error('Invalid Intel HEX format at line ' + lineNumber + ': byte count does not match payload');
+  }
+
+  return {
+    byteCount,
+    address,
+    recordType,
+    data
+  };
+}
+
+/** Parse Intel HEX into absolute-address bytes. */
+function parseIntelHexImage(fileContent: string): ParsedIntelHexImage {
+  const lines = fileContent.split('\n');
+  const bytes = new Map<number, number>();
+  let extendedLinearBase = 0;
+  let extendedSegmentBase = 0;
+  let addressingMode: 'linear' | 'segment' = 'linear';
+  let startLinearAddress: number | null = null;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) {
+      continue;
+    }
+
+    const record = parseIntelHexLine(line, i + 1);
+
+    if (record.recordType === 0x00) {
+      const base = addressingMode === 'linear' ? extendedLinearBase : extendedSegmentBase;
+      for (let j = 0; j < record.data.length; j += 1) {
+        const absoluteAddress = base + record.address + j;
+        bytes.set(absoluteAddress, record.data[j]);
+      }
+      continue;
+    }
+
+    if (record.recordType === 0x01) {
+      break;
+    }
+
+    if (record.recordType === 0x02) {
+      if (record.data.length !== 2) {
+        throw new Error('Invalid type 02 record length in Intel HEX');
+      }
+      addressingMode = 'segment';
+      extendedSegmentBase = (((record.data[0] << 8) | record.data[1]) << 4) >>> 0;
+      continue;
+    }
+
+    if (record.recordType === 0x04) {
+      if (record.data.length !== 2) {
+        throw new Error('Invalid type 04 record length in Intel HEX');
+      }
+      addressingMode = 'linear';
+      extendedLinearBase = (((record.data[0] << 8) | record.data[1]) << 16) >>> 0;
+      continue;
+    }
+
+    if (record.recordType === 0x05) {
+      if (record.data.length !== 4) {
+        throw new Error('Invalid type 05 record length in Intel HEX');
+      }
+      startLinearAddress = (
+        (record.data[0] << 24)
+        | (record.data[1] << 16)
+        | (record.data[2] << 8)
+        | record.data[3]
+      ) >>> 0;
+      continue;
+    }
+  }
+
+  return {
+    bytes,
+    startLinearAddress
+  };
+}
+
+/** Build one Intel HEX line from record parts. */
+function buildIntelHexLine(recordType: number, address: number, data: number[]): string {
+  const length = data.length;
+  const frame = new Uint8Array(4 + length + 1);
+  frame[0] = length;
+  frame[1] = (address >> 8) & 0xFF;
+  frame[2] = address & 0xFF;
+  frame[3] = recordType & 0xFF;
+
+  for (let i = 0; i < length; i += 1) {
+    frame[4 + i] = data[i] & 0xFF;
+  }
+
+  const checksum = ((0x100 - (sum(frame.subarray(0, frame.length - 1)) & 0xFF)) & 0xFF) >>> 0;
+  frame[frame.length - 1] = checksum;
+
+  let line = ':';
+  for (const byte of frame) {
+    line += byte.toString(16).toUpperCase().padStart(2, '0');
+  }
+  return line;
+}
+
+/**
+ * Merge two Intel HEX payloads into one HEX image.
+ *
+ * Throws on conflicting overlapping bytes to prevent silent corruption.
+ */
+export function mergeIntelHexContents(
+  firstHex: string,
+  secondHex: string
+): { mergedHex: string; byteCount: number } {
+  const first = parseIntelHexImage(firstHex);
+  const second = parseIntelHexImage(secondHex);
+  const merged = new Map<number, number>();
+
+  for (const [address, value] of first.bytes) {
+    merged.set(address, value);
+  }
+
+  for (const [address, value] of second.bytes) {
+    const existing = merged.get(address);
+    if (existing !== undefined && existing !== value) {
+      throw new Error(
+        'Conflicting overlap at address 0x'
+        + address.toString(16).toUpperCase()
+        + ': first=0x'
+        + existing.toString(16).toUpperCase().padStart(2, '0')
+        + ', second=0x'
+        + value.toString(16).toUpperCase().padStart(2, '0')
+      );
+    }
+    merged.set(address, value);
+  }
+
+  if (merged.size === 0) {
+    throw new Error('Cannot merge Intel HEX files: no data records found');
+  }
+
+  const addresses = Array.from(merged.keys()).sort((a, b) => a - b);
+  const lines: string[] = [];
+  let currentUpper = -1;
+
+  let index = 0;
+  while (index < addresses.length) {
+    const start = addresses[index];
+    const upper = start >>> 16;
+    if (upper !== currentUpper) {
+      lines.push(buildIntelHexLine(0x04, 0x0000, [(upper >> 8) & 0xFF, upper & 0xFF]));
+      currentUpper = upper;
+    }
+
+    const chunkBytes: number[] = [];
+    const lowStart = start & 0xFFFF;
+    let expected = start;
+
+    while (index < addresses.length && chunkBytes.length < 16) {
+      const addr = addresses[index];
+      if (addr !== expected) {
+        break;
+      }
+
+      if ((addr >>> 16) !== currentUpper) {
+        break;
+      }
+
+      chunkBytes.push(merged.get(addr) as number);
+      expected += 1;
+      index += 1;
+    }
+
+    lines.push(buildIntelHexLine(0x00, lowStart, chunkBytes));
+  }
+
+  const startLinearAddress = second.startLinearAddress ?? first.startLinearAddress;
+  if (startLinearAddress !== null) {
+    lines.push(
+      buildIntelHexLine(0x05, 0x0000, [
+        (startLinearAddress >>> 24) & 0xFF,
+        (startLinearAddress >>> 16) & 0xFF,
+        (startLinearAddress >>> 8) & 0xFF,
+        startLinearAddress & 0xFF
+      ])
+    );
+  }
+
+  lines.push(buildIntelHexLine(0x01, 0x0000, []));
+
+  return {
+    mergedHex: lines.join('\n') + '\n',
+    byteCount: merged.size
+  };
 }

@@ -1,5 +1,8 @@
-import * as tools from './utils';
+import { b2hexstr, num2a } from './utils';
 
+/**
+ * STM32 ROM bootloader protocol constants (UART transport).
+ */
 const MAX_WRITE_BLOCK_SIZE_STM32 = 256;
 const MAX_READ_BLOCK_SIZE = 256;
 
@@ -18,10 +21,19 @@ const CMD_WRITE = 0x31;
 const CMD_ERASE = 0x43;
 const CMD_EXTENDED_ERASE = 0x44;
 
+/**
+ * Normalize input data to Uint8Array frames expected by serial writes.
+ */
 function u8a(array: number[] | Uint8Array): Uint8Array {
   return new Uint8Array(array);
 }
 
+/**
+ * Minimal serial contract required by STM32Api.
+ *
+ * The adapter intentionally mirrors WebSerial-like naming for control lines
+ * so the same high-level protocol logic can be reused across runtimes.
+ */
 type SerialLike = {
   isOpen: () => boolean;
   open: (parameter: { baudRate: number; parity?: 'none' | 'even' | 'odd' | 'mark' | 'space' }) => Promise<void>;
@@ -31,6 +43,15 @@ type SerialLike = {
   control: (lineParams: { dataTerminalReady?: boolean; requestToSend?: boolean }) => Promise<void>;
 };
 
+/**
+ * UART implementation of the STM32 ROM bootloader command set.
+ *
+ * Responsibilities:
+ * - Enter bootloader using BOOT0/RESET signaling.
+ * - Discover supported commands via GET/GID.
+ * - Erase and write flash memory.
+ * - Optionally jump to user firmware with GO.
+ */
 export default class STM32Api {
   [key: string]: any;
 
@@ -47,6 +68,9 @@ export default class STM32Api {
     this.commands = [];
   }
 
+  /**
+   * Open the serial link and switch target into ROM bootloader mode.
+   */
   async connect(params: { baudrate: string; replyMode?: boolean }): Promise<void> {
     this.log('Connecting with baudrate ' + params.baudrate + ' and reply mode ' + (params.replyMode ? 'on' : 'off'));
 
@@ -68,6 +92,9 @@ export default class STM32Api {
     await this.activateBootloader();
   }
 
+  /**
+   * Close the session and return BOOT0/RESET lines to normal state.
+   */
   async disconnect(): Promise<void> {
     const signal = {};
     signal[BOOT0_PIN] = PIN_LOW;
@@ -79,6 +106,9 @@ export default class STM32Api {
     }
   }
 
+  /**
+   * Write data to flash, splitting into protocol-sized blocks.
+   */
   async write(data: Uint8Array, address: number, onProgress?: (writtenBlocks: number, totalBlocks: number) => void): Promise<void> {
     this.log('Writing ' + data.length + ' bytes to flash at address 0x' + address.toString(16) + ' using ' + this.writeBlockSize + ' bytes chunks');
 
@@ -106,6 +136,9 @@ export default class STM32Api {
     this.log('Finished writing block sequence');
   }
 
+  /**
+   * Perform a full-chip erase using supported erase command variant.
+   */
   async eraseAll(): Promise<void> {
     if (!this.serial.isOpen()) {
       throw new Error('Connection must be established before sending commands');
@@ -141,6 +174,9 @@ export default class STM32Api {
     }
   }
 
+  /**
+   * Execute GET command and cache supported bootloader commands.
+   */
   async cmdGET(): Promise<{ blVersion: string; commands: number[] }> {
     if (!this.serial.isOpen()) {
       throw new Error('Connection must be established before sending commands');
@@ -167,6 +203,9 @@ export default class STM32Api {
     return info;
   }
 
+  /**
+   * Execute GID command and return device ID as hex string.
+   */
   async cmdGID(): Promise<string> {
     if (!this.commands.length) {
       throw new Error('Execute GET command first');
@@ -187,9 +226,12 @@ export default class STM32Api {
       throw new Error('Unexpected response');
     }
 
-    return '0x' + tools.b2hexstr(response[2]) + tools.b2hexstr(response[3]);
+    return '0x' + b2hexstr(response[2]) + b2hexstr(response[3]);
   }
 
+  /**
+   * Execute GO command at the given absolute address.
+   */
   async cmdGO(address: number): Promise<void> {
     if (!Number.isInteger(address)) {
       throw new Error('Invalid address parameter');
@@ -199,7 +241,7 @@ export default class STM32Api {
       throw new Error('Connection must be established before sending commands');
     }
 
-    const addressFrame = tools.num2a(address, 4);
+    const addressFrame = num2a(address, 4);
     addressFrame.push(this.calcChecksum(addressFrame, false));
 
     await this.serial.write(u8a([CMD_GO, 0xFF ^ CMD_GO]));
@@ -215,6 +257,9 @@ export default class STM32Api {
     }
   }
 
+  /**
+   * Execute single WRITE command frame at an absolute address.
+   */
   async cmdWRITE(data: Uint8Array, address: number): Promise<void> {
     if (!(data instanceof Uint8Array)) {
       throw new Error('Missing data to write');
@@ -242,7 +287,7 @@ export default class STM32Api {
     frame.set(data, 1);
     frame[frame.length - 1] = checksum;
 
-    const addressFrame = tools.num2a(address, 4);
+    const addressFrame = num2a(address, 4);
     addressFrame.push(this.calcChecksum(addressFrame, false));
 
     await this.serial.write(u8a([CMD_WRITE, 0xFF ^ CMD_WRITE]));
@@ -264,6 +309,11 @@ export default class STM32Api {
     }
   }
 
+  /**
+   * Read one bootloader response frame.
+   *
+   * In reply mode, echo back the first byte as expected by some targets.
+   */
   async readResponse(): Promise<Uint8Array> {
     const result = await this.serial.read();
 
@@ -274,6 +324,9 @@ export default class STM32Api {
     return result;
   }
 
+  /**
+   * Toggle control lines and send sync byte to activate ROM bootloader.
+   */
   async activateBootloader(): Promise<void> {
     this.log('Activating bootloader...');
 
@@ -304,6 +357,9 @@ export default class STM32Api {
     this.log('Bootloader is ready for commands');
   }
 
+  /**
+   * Pulse RESET line and wait for the target to reinitialize UART.
+   */
   async resetTarget(): Promise<void> {
     this.log('Resetting target...');
 
@@ -322,6 +378,9 @@ export default class STM32Api {
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
+  /**
+   * Compute STM32 bootloader XOR checksum for a frame.
+   */
   calcChecksum(data: Uint8Array | number[], withLength: boolean): number {
     let result = 0;
     for (let i = 0; i < data.length; i += 1) {
